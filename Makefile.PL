@@ -9,9 +9,9 @@ WriteMakefile(
     LICENSE      => 'perl',
     PREREQ_PM    => {
         'Class::Accessor::Fast'      => '0',
+        'DateTime'                   => '0',
         'Digest::MD5::File'          => '0',       # for testing
-        'Digest::HMAC_SHA1'          => '0',
-        'HTTP::Date'                 => '0',
+        'Digest::SHA'                => '0',
         'IO::File'                   => '0',
         'LWP::UserAgent::Determined' => '0',
         'MIME::Base64'               => '0',

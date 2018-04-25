@@ -3,17 +3,18 @@ use strict;
 use warnings;
 
 use Carp;
-use Digest::HMAC_SHA1;
-use HTTP::Date;
+use Digest::SHA qw(hmac_sha256_hex);
+use DateTime;
 use MIME::Base64 qw(encode_base64);
 use Amazon::S3::Bucket;
 use LWP::UserAgent::Determined;
 use URI::Escape qw(uri_escape_utf8);
 use XML::Simple;
+use URI;
 
 use base qw(Class::Accessor::Fast);
 __PACKAGE__->mk_accessors(
-    qw(aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host)
+    qw(region aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host)
 );
 our $VERSION = '0.45';
 
@@ -30,7 +31,12 @@ sub new {
 
     $self->secure(0)                if not defined $self->secure;
     $self->timeout(30)              if not defined $self->timeout;
-    $self->host('s3.amazonaws.com') if not defined $self->host;
+    
+    # default to US East (N. Virginia) region
+    $self->region('us-east-1') unless $self->region;
+    
+    my $region = $self->region;
+    $self->host("s3.$region.amazonaws.com") if not defined $self->host;
 
     my $ua;
     if ($self->retry) {
@@ -405,8 +411,38 @@ sub _add_auth_header {
     my $canonical_string = $self->_canonical_string($method, $path, $headers);
     my $encoded_canonical =
       $self->_encode($aws_secret_access_key, $canonical_string);
-    $headers->header(
-        Authorization => "AWS $aws_access_key_id:$encoded_canonical");
+    #$headers->header(
+    #    Authorization => "AWS $aws_access_key_id:$encoded_canonical");
+
+    my $date = DateTime->now( time_zone => 'UTC' )->ymd("");
+    my $region = $self->region;
+    my $signature = "";
+
+    $headers->header( Authorization =>
+        # The algorithm that was used to calculate the signature.
+        # You must provide this value when you use AWS Signature Version 4 for authentication.
+        # The string specifies AWS Signature Version 4 (AWS4) and the signing algorithm (HMAC-SHA256).
+        "AWS4-HMAC-SHA25"
+        # * There is space between the first two components, AWS4-HMAC-SHA256 and Credential
+        # * The subsequent components, Credential, SignedHeaders, and Signature are separated by a comma.
+        . " "
+        # Credential:
+        # Your access key ID and the scope information,
+        # which includes the date, region, and service that were used to calculate the signature.
+        # This string has the following form:
+        # <your-access-key-id>/<date>/<aws-region>/<aws-service>/aws4_request
+        # Where:
+        # * <date> value is specified using YYYYMMDD format.
+        # * <aws-service> value is s3 when sending request to Amazon S3.
+        . "Credential=$aws_access_key_id/$date/$region/s3/aws4_request," 
+        # SignedHeaders:
+        # A semicolon-separated list of request headers that you used to compute Signature.
+        # The list includes header names only, and the header names must be in lowercase.
+        . "SignedHeaders=host;range;x-amz-date,"
+        # Signature:
+        # The 256-bit signature expressed as 64 lowercase hexadecimal characters.
+        . "Signature=$signature"
+    );
 }
 
 # generates an HTTP::Headers objects given one hash that represents http
@@ -431,6 +467,9 @@ sub _merge_meta {
 # only used by query string authentication.
 sub _canonical_string {
     my ($self, $method, $path, $headers, $expires) = @_;
+
+    my $uri = URI->new($path);
+
     my %interesting_headers = ();
     while (my ($key, $value) = each %$headers) {
         my $lk = lc $key;
@@ -479,6 +518,39 @@ sub _canonical_string {
     elsif ($path =~ /[&?]location($|=|&)/) {
         $buf .= '?location';
     }
+
+    # NEW CODE
+
+    my $canonical_uri = uri_escape_utf8($uri->path);
+    
+    my $canonical_query_string = "";
+    my %parameters = $uri->query_form;
+    foreach my $key (sort keys %parameters) {
+        $canonical_query_string .= uri_escape_utf8($key);
+        $canonical_query_string .= '=';
+        $canonical_query_string .= uri_escape_utf8($parameters{$key});
+    }
+
+    # From: https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
+    #
+    # HTTPMethod is one of the HTTP methods, for example GET, PUT, HEAD, and DELETE
+    my $buf = "$method\n";
+    # CanonicalURI is the URI-encoded version of the absolute path component of the URI
+    # --everything starting with the "/" that follows the domain name
+    # and up to the end of the string or to the question mark character (?)
+    # if you have query string parameters. The URI in the following example,
+    #     /examplebucket/myphoto.jpg,
+    # is the absolute path and you don't encode the "/" in the absolute path:
+    #     http://s3.amazonaws.com/examplebucket/myphoto.jpg
+    $buf .= "$canonical_uri\n";
+    # CanonicalQueryString specifies the URI-encoded query string parameters.
+    # You URI-encode name and values individually.
+    # You must also sort the parameters in the canonical query string alphabetically by key name.
+    # The sorting occurs after encoding.
+    # The query string in the following URI example is
+    # prefix=somePrefix&marker=someMarker&max-keys=20:
+    #     http://s3.amazonaws.com/examplebucket?prefix=somePrefix&marker=someMarker&max-keys=20
+    $buf .= "$canonical_query_string\n";
 
     return $buf;
 }
@@ -531,9 +603,13 @@ managing Amazon S3 buckets and keys.
   
   my $aws_access_key_id     = "Fill me in!";
   my $aws_secret_access_key = "Fill me in too!";
+
+  # defaults to US East (N. Virginia)
+  my $region = "us-east-1";
   
   my $s3 = Amazon::S3->new(
-      {   aws_access_key_id     => $aws_access_key_id,
+      {   region                => $region,
+          aws_access_key_id     => $aws_access_key_id,
           aws_secret_access_key => $aws_secret_access_key,
           retry                 => 1
       }
@@ -616,6 +692,14 @@ portability.
 Create a new S3 client object. Takes some arguments:
 
 =over
+
+=item region
+
+This is the region your buckets are in.
+Defaults to us-east-1
+
+See a list of regions at:
+https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
 
 =item aws_access_key_id 
 
