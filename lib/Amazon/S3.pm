@@ -468,67 +468,33 @@ sub _merge_meta {
 sub _canonical_string {
     my ($self, $method, $path, $headers, $expires) = @_;
 
+    my $now = DateTime->now( time_zone => 'UTC' );
+
     my $uri = URI->new($path);
 
-    my %interesting_headers = ();
-    while (my ($key, $value) = each %$headers) {
-        my $lk = lc $key;
-        if (   $lk eq 'content-md5'
-            or $lk eq 'content-type'
-            or $lk eq 'date'
-            or $lk =~ /^$AMAZON_HEADER_PREFIX/)
-        {
-            $interesting_headers{$lk} = $self->_trim($value);
-        }
-    }
-
-    # these keys get empty strings if they don't exist
-    $interesting_headers{'content-type'} ||= '';
-    $interesting_headers{'content-md5'}  ||= '';
-
-    # just in case someone used this.  it's not necessary in this lib.
-    $interesting_headers{'date'} = ''
-      if $interesting_headers{'x-amz-date'};
-
-    # if you're using expires for query string auth, then it trumps date
-    # (and x-amz-date)
-    $interesting_headers{'date'} = $expires if $expires;
-
-    my $buf = "$method\n";
-    foreach my $key (sort keys %interesting_headers) {
-        if ($key =~ /^$AMAZON_HEADER_PREFIX/) {
-            $buf .= "$key:$interesting_headers{$key}\n";
-        }
-        else {
-            $buf .= "$interesting_headers{$key}\n";
-        }
-    }
-
-    # don't include anything after the first ? in the resource...
-    $path =~ /^([^?]*)/;
-    $buf .= "/$1";
-
-    # ...unless there is an acl or torrent parameter
-    if ($path =~ /[&?]acl($|=|&)/) {
-        $buf .= '?acl';
-    }
-    elsif ($path =~ /[&?]torrent($|=|&)/) {
-        $buf .= '?torrent';
-    }
-    elsif ($path =~ /[&?]location($|=|&)/) {
-        $buf .= '?location';
-    }
-
-    # NEW CODE
-
-    my $canonical_uri = uri_escape_utf8($uri->path);
+    my $canonical_uri = $self->_urlencode($uri->path);
     
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
     foreach my $key (sort keys %parameters) {
-        $canonical_query_string .= uri_escape_utf8($key);
+        $canonical_query_string .= $self->_urlencode($key);
         $canonical_query_string .= '=';
-        $canonical_query_string .= uri_escape_utf8($parameters{$key});
+        $canonical_query_string .= $self->_urlencode($parameters{$key});
+    }
+
+    $headers->{host} = $self->host;
+    $headers->{x-amz-content-sha256} = 'UNSIGNED-PAYLOAD';
+
+    my $canonical_headers = "";
+    my $signed_headers;
+    foreach my $key (sort keys %$headers) {
+        $canonical_headers .= lc($key);
+        $canonical_headers .= ':';
+        $canonical_headers .= $self->_trim($headers->{$key});
+        $canonical_headers .= "\n";
+
+        $signed_headers .= ';' if $signed_headers;
+        $signed_headers .= lc($key);
     }
 
     # From: https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
@@ -551,8 +517,40 @@ sub _canonical_string {
     # prefix=somePrefix&marker=someMarker&max-keys=20:
     #     http://s3.amazonaws.com/examplebucket?prefix=somePrefix&marker=someMarker&max-keys=20
     $buf .= "$canonical_query_string\n";
+    # CanonicalHeaders is a list of request headers with their values.
+    # Individual header name and value pairs are separated by the newline character ("\n").
+    # Header names must be in lowercase.
+    # You must sort the header names alphabetically to construct the string
+    $buf .= "$canonical_headers\n";
+    # SignedHeaders is an alphabetically sorted,
+    # semicolon-separated list of lowercase request header names.
+    # The request headers in the list are the same headers that
+    # you included in the CanonicalHeaders string.
+    $buf .= "$signed_headers\n";
+    # Unsigned payload option – You include the literal string UNSIGNED-PAYLOAD
+    # when constructing a canonical request and set the same value as the
+    # x-amz-content-sha256 header value when sending the request to S3.
+    # TODO sign the payloads
+    $buf .= "UNSIGNED-PAYLOAD\n";
+    
+    my $key = $self->aws_secret_access_key;
 
-    return $buf;
+    warn "Canonical Request:\n==========\n$buf\n==========";
+
+    my $string_to_sign = "AWS4-HMAC-SHA256\n";
+    $string_to_sign .= $now->iso8601 . "Z\n";
+    # Scope binds the resulting signature to a specific date, an AWS region, and a service.
+    $string_to_sign .= $now->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
+    $string_to_sign .= hmac_sha256_hex($buf, $key);    
+
+    warn "String to Sign:\n==========\n$string_to_sign\n==========";
+
+    my $date_key = hmac_sha256_hex('AWS4' . $self->aws_secret_access_key . $now->ymd(""), $key);
+    my $date_region_key = hmac_sha256_hex($date_key, $self->region, $key);
+    my $date_region_service_key = hmac_sha256_hex($date_region_key, 's3', $key);
+    my $signing_key = hmac_sha256_hex($date_region_service_key, 'aws4_request', $key);
+
+    return $signing_key;
 }
 
 sub _trim {
@@ -575,6 +573,8 @@ sub _encode {
     else {
         return $b64;
     }
+
+
 }
 
 sub _urlencode {
