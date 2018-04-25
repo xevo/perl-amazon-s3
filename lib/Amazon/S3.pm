@@ -500,7 +500,7 @@ sub _canonical_string {
     # From: https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
     #
     # HTTPMethod is one of the HTTP methods, for example GET, PUT, HEAD, and DELETE
-    my $buf = "$method\n";
+    my $canonical_request = "$method\n";
     # CanonicalURI is the URI-encoded version of the absolute path component of the URI
     # --everything starting with the "/" that follows the domain name
     # and up to the end of the string or to the question mark character (?)
@@ -508,7 +508,7 @@ sub _canonical_string {
     #     /examplebucket/myphoto.jpg,
     # is the absolute path and you don't encode the "/" in the absolute path:
     #     http://s3.amazonaws.com/examplebucket/myphoto.jpg
-    $buf .= "$canonical_uri\n";
+    $canonical_request .= "$canonical_uri\n";
     # CanonicalQueryString specifies the URI-encoded query string parameters.
     # You URI-encode name and values individually.
     # You must also sort the parameters in the canonical query string alphabetically by key name.
@@ -516,39 +516,39 @@ sub _canonical_string {
     # The query string in the following URI example is
     # prefix=somePrefix&marker=someMarker&max-keys=20:
     #     http://s3.amazonaws.com/examplebucket?prefix=somePrefix&marker=someMarker&max-keys=20
-    $buf .= "$canonical_query_string\n";
+    $canonical_request .= "$canonical_query_string\n";
     # CanonicalHeaders is a list of request headers with their values.
     # Individual header name and value pairs are separated by the newline character ("\n").
     # Header names must be in lowercase.
     # You must sort the header names alphabetically to construct the string
-    $buf .= "$canonical_headers\n";
+    $canonical_request .= "$canonical_headers\n";
     # SignedHeaders is an alphabetically sorted,
     # semicolon-separated list of lowercase request header names.
     # The request headers in the list are the same headers that
     # you included in the CanonicalHeaders string.
-    $buf .= "$signed_headers\n";
+    $canonical_request .= "$signed_headers\n";
     # Unsigned payload option – You include the literal string UNSIGNED-PAYLOAD
     # when constructing a canonical request and set the same value as the
     # x-amz-content-sha256 header value when sending the request to S3.
     # TODO sign the payloads
-    $buf .= "UNSIGNED-PAYLOAD\n";
+    $canonical_request .= "UNSIGNED-PAYLOAD\n";
     
     my $key = $self->aws_secret_access_key;
 
-    warn "Canonical Request:\n==========\n$buf\n==========";
+    warn "Canonical Request:\n==========\n$canonical_request\n==========";
 
     my $string_to_sign = "AWS4-HMAC-SHA256\n";
     $string_to_sign .= $now->iso8601 . "Z\n";
     # Scope binds the resulting signature to a specific date, an AWS region, and a service.
     $string_to_sign .= $now->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
-    $string_to_sign .= hmac_sha256_hex($buf, $key);    
+    $string_to_sign .= hmac_sha256_hex($canonical_request, $key);    
 
     warn "String to Sign:\n==========\n$string_to_sign\n==========";
 
     my $date_key = hmac_sha256_hex('AWS4' . $self->aws_secret_access_key . $now->ymd(""), $key);
-    my $date_region_key = hmac_sha256_hex($date_key, $self->region, $key);
-    my $date_region_service_key = hmac_sha256_hex($date_region_key, 's3', $key);
-    my $signing_key = hmac_sha256_hex($date_region_service_key, 'aws4_request', $key);
+    my $date_region_key = hmac_sha256_hex($date_key . $self->region, $key);
+    my $date_region_service_key = hmac_sha256_hex($date_region_key . 's3', $key);
+    my $signing_key = hmac_sha256_hex($date_region_service_key . 'aws4_request', $key);
 
     return $signing_key;
 }
