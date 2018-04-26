@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use Carp;
-use Digest::SHA qw(hmac_sha256_hex);
+use Digest::SHA qw(sha256_hex hmac_sha256 hmac_sha256_hex);
 use DateTime;
 use MIME::Base64 qw(encode_base64);
 use Amazon::S3::Bucket;
@@ -312,7 +312,11 @@ sub _do_http {
     # convenient time to reset any error conditions
     $self->err(undef);
     $self->errstr(undef);
-    return $self->ua->request($request, $filename);
+    my $response = $self->ua->request($request, $filename);
+    warn "\n==========\nREQUEST:\n" . $request->as_string;
+    warn "\n==========\nRESPONSE:\n" . $response->as_string;
+    warn "==========\n";
+    return $response;
 }
 
 sub _send_request_expect_nothing {
@@ -405,24 +409,19 @@ sub _add_auth_header {
     my $aws_access_key_id     = $self->aws_access_key_id;
     my $aws_secret_access_key = $self->aws_secret_access_key;
 
-    if (not $headers->header('Date')) {
-        $headers->header(Date => time2str(time));
-    }
-    my $canonical_string = $self->_canonical_string($method, $path, $headers);
-    my $encoded_canonical =
-      $self->_encode($aws_secret_access_key, $canonical_string);
-    #$headers->header(
-    #    Authorization => "AWS $aws_access_key_id:$encoded_canonical");
+    #if (not $headers->header('Date')) {
+    #    $headers->header(Date => time2str(time));
+    #}
 
     my $date = DateTime->now( time_zone => 'UTC' )->ymd("");
     my $region = $self->region;
-    my $signature = "";
+    my ($signing_key, $signed_headers) = $self->_get_signature($method, $path, $headers);
 
     $headers->header( Authorization =>
         # The algorithm that was used to calculate the signature.
         # You must provide this value when you use AWS Signature Version 4 for authentication.
         # The string specifies AWS Signature Version 4 (AWS4) and the signing algorithm (HMAC-SHA256).
-        "AWS4-HMAC-SHA25"
+        "AWS4-HMAC-SHA256"
         # * There is space between the first two components, AWS4-HMAC-SHA256 and Credential
         # * The subsequent components, Credential, SignedHeaders, and Signature are separated by a comma.
         . " "
@@ -438,10 +437,10 @@ sub _add_auth_header {
         # SignedHeaders:
         # A semicolon-separated list of request headers that you used to compute Signature.
         # The list includes header names only, and the header names must be in lowercase.
-        . "SignedHeaders=host;range;x-amz-date,"
+        . "SignedHeaders=$signed_headers,"
         # Signature:
         # The 256-bit signature expressed as 64 lowercase hexadecimal characters.
-        . "Signature=$signature"
+        . "Signature=$signing_key"
     );
 }
 
@@ -463,31 +462,36 @@ sub _merge_meta {
     return $http_header;
 }
 
-# generate a canonical string for the given parameters.  expires is optional and is
-# only used by query string authentication.
-sub _canonical_string {
+sub _get_signature {
     my ($self, $method, $path, $headers, $expires) = @_;
 
     my $now = DateTime->now( time_zone => 'UTC' );
 
     my $uri = URI->new($path);
 
-    my $canonical_uri = $self->_urlencode($uri->path);
+    my ($bucket_name, $object_key_name) = $uri->path =~ /^([^\/]*)(.+)$/;
+    # Encode the forward slash character, '/', everywhere except in the object key name.
+    # For example, if the object key name is photos/Jan/sample.jpg,
+    # the forward slash in the key name is not encoded.
+    my $canonical_uri = $self->_urlencode($object_key_name, "\/");
     
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
     foreach my $key (sort keys %parameters) {
+        $canonical_query_string .= '&' if $canonical_query_string;
         $canonical_query_string .= $self->_urlencode($key);
         $canonical_query_string .= '=';
         $canonical_query_string .= $self->_urlencode($parameters{$key});
     }
 
-    $headers->{host} = $self->host;
-    $headers->{x-amz-content-sha256} = 'UNSIGNED-PAYLOAD';
+
+    $headers->{host} = "$bucket_name." . $self->host;
+    $headers->{'x-amz-date'} = $now->ymd("") . 'T' . $now->hms("") . 'Z';
+    $headers->{'x-amz-content-sha256'} = 'UNSIGNED-PAYLOAD';
 
     my $canonical_headers = "";
     my $signed_headers;
-    foreach my $key (sort keys %$headers) {
+    foreach my $key (sort { lc($a) cmp lc($b) } keys %$headers) {
         $canonical_headers .= lc($key);
         $canonical_headers .= ':';
         $canonical_headers .= $self->_trim($headers->{$key});
@@ -531,26 +535,25 @@ sub _canonical_string {
     # when constructing a canonical request and set the same value as the
     # x-amz-content-sha256 header value when sending the request to S3.
     # TODO sign the payloads
-    $canonical_request .= "UNSIGNED-PAYLOAD\n";
+    $canonical_request .= "UNSIGNED-PAYLOAD";
     
-    my $key = $self->aws_secret_access_key;
-
-    warn "Canonical Request:\n==========\n$canonical_request\n==========";
+    #warn "Canonical Request:\n==========\n$canonical_request\n==========";
 
     my $string_to_sign = "AWS4-HMAC-SHA256\n";
-    $string_to_sign .= $now->iso8601 . "Z\n";
+    $string_to_sign .= $now->ymd("") . 'T' . $now->hms("") . "Z\n";
     # Scope binds the resulting signature to a specific date, an AWS region, and a service.
     $string_to_sign .= $now->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
-    $string_to_sign .= hmac_sha256_hex($canonical_request, $key);    
+    $string_to_sign .= sha256_hex($canonical_request);    
 
-    warn "String to Sign:\n==========\n$string_to_sign\n==========";
+    #warn "String to Sign:\n==========\n$string_to_sign\n==========";
 
-    my $date_key = hmac_sha256_hex('AWS4' . $self->aws_secret_access_key . $now->ymd(""), $key);
-    my $date_region_key = hmac_sha256_hex($date_key . $self->region, $key);
-    my $date_region_service_key = hmac_sha256_hex($date_region_key . 's3', $key);
-    my $signing_key = hmac_sha256_hex($date_region_service_key . 'aws4_request', $key);
+    my $date_key = hmac_sha256($now->ymd(""), 'AWS4' . $self->aws_secret_access_key);
+    my $date_region_key = hmac_sha256($self->region, $date_key);
+    my $date_region_service_key = hmac_sha256('s3', $date_region_key);
+    my $signing_key = hmac_sha256('aws4_request', $date_region_service_key);
+    my $signature = hmac_sha256_hex($string_to_sign, $signing_key);
 
-    return $signing_key;
+    return ($signature, $signed_headers);
 }
 
 sub _trim {
@@ -560,26 +563,10 @@ sub _trim {
     return $value;
 }
 
-# finds the hmac-sha1 hash of the canonical string and the aws secret access key and then
-# base64 encodes the result (optionally urlencoding after that).
-sub _encode {
-    my ($self, $aws_secret_access_key, $str, $urlencode) = @_;
-    my $hmac = Digest::HMAC_SHA1->new($aws_secret_access_key);
-    $hmac->add($str);
-    my $b64 = encode_base64($hmac->digest, '');
-    if ($urlencode) {
-        return $self->_urlencode($b64);
-    }
-    else {
-        return $b64;
-    }
-
-
-}
-
 sub _urlencode {
-    my ($self, $unencoded) = @_;
-    return uri_escape_utf8($unencoded, '^A-Za-z0-9_-');
+    my ($self, $unencoded, $noencode) = @_;
+    $noencode ||= "";
+    return uri_escape_utf8($unencoded, "^${noencode}A-Za-z0-9_-");
 }
 
 1;
