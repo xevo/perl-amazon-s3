@@ -36,7 +36,7 @@ sub new {
     $self->region('us-east-1') unless $self->region;
     
     my $region = $self->region;
-    $self->host("s3.$region.amazonaws.com") if not defined $self->host;
+    $self->host("s3.amazonaws.com") if not defined $self->host;
 
     my $ua;
     if ($self->retry) {
@@ -260,27 +260,34 @@ sub _make_request {
     my ($self, $method, $path, $headers, $data, $metadata) = @_;
     croak 'must specify method' unless $method;
     croak 'must specify path'   unless defined $path;
+
+    $self->{_now} = DateTime->now( time_zone => 'UTC' );
+
     $headers ||= {};
+    # TODO sign this!
     $data = '' if not defined $data;
     $metadata ||= {};
-    my $http_headers = $self->_merge_meta($headers, $metadata);
 
-    $self->_add_auth_header($http_headers, $method, $path)
-      unless exists $headers->{Authorization};
     my $protocol = $self->secure ? 'https' : 'http';
     my $host     = $self->host;
     my $url      = "$protocol://$host/$path";
     if ($path =~ m{^([^/?]+)(.*)} && _is_dns_bucket($1)) {
-        $url = "$protocol://$1.$host$2";
+        $host = "$1.$host";
+        $url = "$protocol://$host$2";
     }
+
+    my $hashed_payload = $data ? sha256_hex($data) : 'UNSIGNED-PAYLOAD';
+
+    my $http_headers = $self->_merge_meta($headers, $metadata);
+    $http_headers->{host} = $host;
+    $http_headers->{'x-amz-date'} = $self->{_now}->ymd("") . 'T' . $self->{_now}->hms("") . 'Z';
+    $http_headers->{'x-amz-content-sha256'} = $hashed_payload;
+
+    $self->_add_auth_header($http_headers, $method, $path, $hashed_payload)
+      unless exists $headers->{Authorization};
 
     my $request = HTTP::Request->new($method, $url, $http_headers);
     $request->content($data);
-
-    # my $req_as = $request->as_string;
-    # $req_as =~ s/[^\n\r\x20-\x7f]/?/g;
-    # $req_as = substr( $req_as, 0, 1024 ) . "\n\n";
-    # warn $req_as;
 
     return $request;
 }
@@ -405,7 +412,7 @@ sub _remember_errors {
 }
 
 sub _add_auth_header {
-    my ($self, $headers, $method, $path) = @_;
+    my ($self, $headers, $method, $path, $hashed_payload) = @_;
     my $aws_access_key_id     = $self->aws_access_key_id;
     my $aws_secret_access_key = $self->aws_secret_access_key;
 
@@ -413,9 +420,9 @@ sub _add_auth_header {
     #    $headers->header(Date => time2str(time));
     #}
 
-    my $date = DateTime->now( time_zone => 'UTC' )->ymd("");
+    my $date = $self->{_now}->ymd("");
     my $region = $self->region;
-    my ($signing_key, $signed_headers) = $self->_get_signature($method, $path, $headers);
+    my ($signing_key, $signed_headers) = $self->_get_signature($method, $path, $headers, undef, $hashed_payload);
 
     $headers->header( Authorization =>
         # The algorithm that was used to calculate the signature.
@@ -463,9 +470,7 @@ sub _merge_meta {
 }
 
 sub _get_signature {
-    my ($self, $method, $path, $headers, $expires) = @_;
-
-    my $now = DateTime->now( time_zone => 'UTC' );
+    my ($self, $method, $path, $headers, $expires, $hashed_payload) = @_;
 
     my $uri = URI->new($path);
 
@@ -485,10 +490,6 @@ sub _get_signature {
     }
 
 
-    $headers->{host} = "$bucket_name." . $self->host;
-    $headers->{'x-amz-date'} = $now->ymd("") . 'T' . $now->hms("") . 'Z';
-    $headers->{'x-amz-content-sha256'} = 'UNSIGNED-PAYLOAD';
-
     my $canonical_headers = "";
     my $signed_headers;
     foreach my $key (sort { lc($a) cmp lc($b) } keys %$headers) {
@@ -506,48 +507,27 @@ sub _get_signature {
     # HTTPMethod is one of the HTTP methods, for example GET, PUT, HEAD, and DELETE
     my $canonical_request = "$method\n";
     # CanonicalURI is the URI-encoded version of the absolute path component of the URI
-    # --everything starting with the "/" that follows the domain name
-    # and up to the end of the string or to the question mark character (?)
-    # if you have query string parameters. The URI in the following example,
-    #     /examplebucket/myphoto.jpg,
-    # is the absolute path and you don't encode the "/" in the absolute path:
-    #     http://s3.amazonaws.com/examplebucket/myphoto.jpg
     $canonical_request .= "$canonical_uri\n";
     # CanonicalQueryString specifies the URI-encoded query string parameters.
-    # You URI-encode name and values individually.
-    # You must also sort the parameters in the canonical query string alphabetically by key name.
-    # The sorting occurs after encoding.
-    # The query string in the following URI example is
-    # prefix=somePrefix&marker=someMarker&max-keys=20:
-    #     http://s3.amazonaws.com/examplebucket?prefix=somePrefix&marker=someMarker&max-keys=20
     $canonical_request .= "$canonical_query_string\n";
     # CanonicalHeaders is a list of request headers with their values.
-    # Individual header name and value pairs are separated by the newline character ("\n").
-    # Header names must be in lowercase.
-    # You must sort the header names alphabetically to construct the string
     $canonical_request .= "$canonical_headers\n";
     # SignedHeaders is an alphabetically sorted,
     # semicolon-separated list of lowercase request header names.
-    # The request headers in the list are the same headers that
-    # you included in the CanonicalHeaders string.
     $canonical_request .= "$signed_headers\n";
-    # Unsigned payload option – You include the literal string UNSIGNED-PAYLOAD
-    # when constructing a canonical request and set the same value as the
-    # x-amz-content-sha256 header value when sending the request to S3.
-    # TODO sign the payloads
-    $canonical_request .= "UNSIGNED-PAYLOAD";
+    $canonical_request .= $hashed_payload;
     
-    #warn "Canonical Request:\n==========\n$canonical_request\n==========";
+    warn "Canonical Request:\n==========\n$canonical_request\n==========";
 
     my $string_to_sign = "AWS4-HMAC-SHA256\n";
-    $string_to_sign .= $now->ymd("") . 'T' . $now->hms("") . "Z\n";
+    $string_to_sign .= $self->{_now}->ymd("") . 'T' . $self->{_now}->hms("") . "Z\n";
     # Scope binds the resulting signature to a specific date, an AWS region, and a service.
-    $string_to_sign .= $now->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
+    $string_to_sign .= $self->{_now}->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
     $string_to_sign .= sha256_hex($canonical_request);    
 
-    #warn "String to Sign:\n==========\n$string_to_sign\n==========";
+    warn "String to Sign:\n==========\n$string_to_sign\n==========";
 
-    my $date_key = hmac_sha256($now->ymd(""), 'AWS4' . $self->aws_secret_access_key);
+    my $date_key = hmac_sha256($self->{_now}->ymd(""), 'AWS4' . $self->aws_secret_access_key);
     my $date_region_key = hmac_sha256($self->region, $date_key);
     my $date_region_service_key = hmac_sha256('s3', $date_region_key);
     my $signing_key = hmac_sha256('aws4_request', $date_region_service_key);
