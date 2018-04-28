@@ -335,10 +335,10 @@ sub _do_http {
     $self->err(undef);
     $self->errstr(undef);
     my $response = $self->ua->request($request, $filename);
-    warn "\n==========\nREQUEST:\n" . $request->as_string;
-    warn "\n==========\nRESPONSE:\n" . $response->as_string;
-    warn "==========\n";
-    return ($response);
+    #warn "\n==========\nREQUEST:\n" . $request->as_string;
+    #warn "\n==========\nRESPONSE:\n" . $response->as_string;
+    #warn "==========\n";
+    return $response;
 }
 
 sub _send_request_expect_nothing {
@@ -532,7 +532,7 @@ sub _get_signature {
     $canonical_request .= "$signed_headers\n";
     $canonical_request .= $hashed_payload;
     
-    warn "Canonical Request:\n==========\n$canonical_request\n==========";
+    #warn "Canonical Request:\n==========\n$canonical_request\n==========";
 
     my $string_to_sign = "AWS4-HMAC-SHA256\n";
     $string_to_sign .= $self->_req_date->ymd("") . 'T' . $self->_req_date->hms("") . "Z\n";
@@ -540,7 +540,7 @@ sub _get_signature {
     $string_to_sign .= $self->_req_date->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
     $string_to_sign .= sha256_hex($canonical_request);    
 
-    warn "String to Sign:\n==========\n$string_to_sign\n==========";
+    #warn "String to Sign:\n==========\n$string_to_sign\n==========";
 
     my $date_key = hmac_sha256($self->_req_date->ymd(""), 'AWS4' . $self->aws_secret_access_key);
     my $date_region_key = hmac_sha256($self->region, $date_key);
