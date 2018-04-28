@@ -39,12 +39,13 @@ This module requires these other modules and libraries:
 
         Class::Accessor::Fast      
         Digest::MD5::File           # for testing
-        Digest::HMAC_SHA1          
-        HTTP::Date                 
+        Digest::SHA
+        DateTime
         LWP::UserAgent             
         MIME::Base64               
         Test::More                  # for testing
         XML::Simple
+        URI
         URI::Escape                
 
 COPYRIGHT AND LICENCE
