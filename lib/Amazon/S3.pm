@@ -275,8 +275,24 @@ sub _make_request {
         $url = "$protocol://$host$2";
     }
 
-    my $hashed_payload = $data ? sha256_hex($data) : 'UNSIGNED-PAYLOAD';
-
+    my $hashed_payload = 'UNSIGNED-PAYLOAD';
+    my $content;
+    if ($data)
+    {
+        if (ref($data))
+        {
+            my $sha = Digest::SHA->new(256);
+            $sha->addfile($data->{filename}, 'b');
+            $hashed_payload = $sha->hexdigest;
+            $content = $data->{sub};
+        }
+        else
+        {
+            $hashed_payload = sha256_hex($data);
+            $content = $data;
+        }
+    }
+    
     my $http_headers = $self->_merge_meta($headers, $metadata);
     $http_headers->{host} = $host;
     $http_headers->{'x-amz-date'} = $self->_req_date->ymd("") . 'T' . $self->_req_date->hms("") . 'Z';
@@ -286,7 +302,7 @@ sub _make_request {
       unless exists $headers->{Authorization};
 
     my $request = HTTP::Request->new($method, $url, $http_headers);
-    $request->content($data);
+    $request->content($content);
 
     return $request;
 }
@@ -322,7 +338,7 @@ sub _do_http {
     warn "\n==========\nREQUEST:\n" . $request->as_string;
     warn "\n==========\nRESPONSE:\n" . $response->as_string;
     warn "==========\n";
-    return $response;
+    return ($response);
 }
 
 sub _send_request_expect_nothing {
@@ -545,7 +561,7 @@ sub _trim {
 sub _urlencode {
     my ($self, $unencoded, $noencode) = @_;
     $noencode ||= "";
-    return uri_escape_utf8($unencoded, "^${noencode}A-Za-z0-9_-");
+    return uri_escape_utf8($unencoded, "^${noencode}A-Za-z0-9-._~");
 }
 
 1;

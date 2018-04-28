@@ -36,7 +36,10 @@ sub add_key {
 
     if (ref($value) eq 'SCALAR') {
         $conf->{'Content-Length'} ||= -s $$value;
-        $value = _content_sub($$value);
+        $value = {
+            filename => $$value,
+            sub => _content_sub($$value),
+        };
     }
     else {
         $conf->{'Content-Length'} ||= length $value;
@@ -234,6 +237,7 @@ sub _content_sub {
               ||= '';  # LWP expects an empty string on finish, read returns 0
         }
         $remaining -= length($buffer);
+
         return $buffer;
     };
 }
