@@ -14,7 +14,7 @@ use URI;
 
 use base qw(Class::Accessor::Fast);
 __PACKAGE__->mk_accessors(
-    qw(region aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host)
+    qw(region aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host _req_date)
 );
 our $VERSION = '0.45';
 
@@ -261,7 +261,7 @@ sub _make_request {
     croak 'must specify method' unless $method;
     croak 'must specify path'   unless defined $path;
 
-    $self->{_now} = DateTime->now( time_zone => 'UTC' );
+    $self->_req_date( DateTime->now(time_zone => 'UTC') );
 
     $headers ||= {};
     # TODO sign this!
@@ -280,7 +280,7 @@ sub _make_request {
 
     my $http_headers = $self->_merge_meta($headers, $metadata);
     $http_headers->{host} = $host;
-    $http_headers->{'x-amz-date'} = $self->{_now}->ymd("") . 'T' . $self->{_now}->hms("") . 'Z';
+    $http_headers->{'x-amz-date'} = $self->_req_date->ymd("") . 'T' . $self->_req_date->hms("") . 'Z';
     $http_headers->{'x-amz-content-sha256'} = $hashed_payload;
 
     $self->_add_auth_header($http_headers, $method, $path, $hashed_payload)
@@ -420,7 +420,7 @@ sub _add_auth_header {
     #    $headers->header(Date => time2str(time));
     #}
 
-    my $date = $self->{_now}->ymd("");
+    my $date = $self->_req_date->ymd("");
     my $region = $self->region;
     my ($signing_key, $signed_headers) = $self->_get_signature($method, $path, $headers, undef, $hashed_payload);
 
@@ -520,14 +520,14 @@ sub _get_signature {
     warn "Canonical Request:\n==========\n$canonical_request\n==========";
 
     my $string_to_sign = "AWS4-HMAC-SHA256\n";
-    $string_to_sign .= $self->{_now}->ymd("") . 'T' . $self->{_now}->hms("") . "Z\n";
+    $string_to_sign .= $self->_req_date->ymd("") . 'T' . $self->_req_date->hms("") . "Z\n";
     # Scope binds the resulting signature to a specific date, an AWS region, and a service.
-    $string_to_sign .= $self->{_now}->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
+    $string_to_sign .= $self->_req_date->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
     $string_to_sign .= sha256_hex($canonical_request);    
 
     warn "String to Sign:\n==========\n$string_to_sign\n==========";
 
-    my $date_key = hmac_sha256($self->{_now}->ymd(""), 'AWS4' . $self->aws_secret_access_key);
+    my $date_key = hmac_sha256($self->_req_date->ymd(""), 'AWS4' . $self->aws_secret_access_key);
     my $date_region_key = hmac_sha256($self->region, $date_key);
     my $date_region_service_key = hmac_sha256('s3', $date_region_key);
     my $signing_key = hmac_sha256('aws4_request', $date_region_service_key);
