@@ -264,7 +264,6 @@ sub _make_request {
     $self->_req_date( DateTime->now(time_zone => 'UTC') );
 
     $headers ||= {};
-    # TODO sign this!
     $data = '' if not defined $data;
     $metadata ||= {};
 
