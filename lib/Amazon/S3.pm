@@ -8,7 +8,7 @@ use DateTime;
 use MIME::Base64 qw(encode_base64);
 use Amazon::S3::Bucket;
 use LWP::UserAgent::Determined;
-use URI::Escape qw(uri_escape_utf8);
+use URI::Escape qw(uri_escape_utf8 uri_unescape);
 use XML::Simple;
 use URI;
 
@@ -487,7 +487,7 @@ sub _merge_meta {
 sub _get_signature {
     my ($self, $method, $path, $headers, $expires, $hashed_payload) = @_;
 
-    my $uri = URI->new($path);
+    my $uri = URI->new(uri_unescape($path));
 
     my ($bucket_name, $object_key_name) = $uri->path =~ /^([^\/]*)(.+)$/;
     # Encode the forward slash character, '/', everywhere except in the object key name.
@@ -507,14 +507,14 @@ sub _get_signature {
 
     my $canonical_headers = "";
     my $signed_headers;
-    foreach my $key (sort { lc($a) cmp lc($b) } keys %$headers) {
-        $canonical_headers .= lc($key);
+    foreach my $field_name (sort { lc($a) cmp lc($b) } $headers->header_field_names) {
+        $canonical_headers .= lc($field_name);
         $canonical_headers .= ':';
-        $canonical_headers .= $self->_trim($headers->{$key});
+        $canonical_headers .= $self->_trim( $headers->header($field_name) );
         $canonical_headers .= "\n";
 
         $signed_headers .= ';' if $signed_headers;
-        $signed_headers .= lc($key);
+        $signed_headers .= lc($field_name);
     }
 
     # From: https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
@@ -560,8 +560,8 @@ sub _trim {
 
 sub _urlencode {
     my ($self, $unencoded, $noencode) = @_;
-    $noencode ||= "";
-    return uri_escape_utf8($unencoded, "^${noencode}A-Za-z0-9-._~");
+    $noencode ||= '';
+    return  uri_escape_utf8($unencoded, "^A-Za-z0-9-._~" . $noencode);
 }
 
 1;
