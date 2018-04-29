@@ -14,7 +14,10 @@ use URI;
 
 use base qw(Class::Accessor::Fast);
 __PACKAGE__->mk_accessors(
-    qw(region aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host _req_date)
+    qw(
+        region aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host
+        _req_date _canonical_request _string_to_sign
+    )
 );
 our $VERSION = '0.45';
 
@@ -335,9 +338,21 @@ sub _do_http {
     $self->err(undef);
     $self->errstr(undef);
     my $response = $self->ua->request($request, $filename);
-    #warn "\n==========\nREQUEST:\n" . $request->as_string;
-    #warn "\n==========\nRESPONSE:\n" . $response->as_string;
-    #warn "==========\n";
+    if ($response->code eq '403')
+    {
+        warn "CANONICAL REQUEST:\n==========\n";
+        warn $self->_canonical_request || "";
+        warn "\n==========\nSTRING TO SIGN:\n==========\n";
+        warn $self->_string_to_sign || "";
+        warn "\n==========\n";
+    }
+    if ($response->code !~ /^(2|3)/)
+    {
+        warn "\n==========\nREQUEST:\n" . $request->as_string;
+        warn "\n==========\nRESPONSE:\n" . $response->as_string;
+        warn "==========\n";
+    }
+
     return $response;
 }
 
@@ -490,10 +505,6 @@ sub _get_signature {
     my $uri = URI->new(uri_unescape($path));
 
     my ($bucket_name, $object_key_name) = $uri->path =~ /^([^\/]*)(.+)$/;
-    # Encode the forward slash character, '/', everywhere except in the object key name.
-    # For example, if the object key name is photos/Jan/sample.jpg,
-    # the forward slash in the key name is not encoded.
-    my $canonical_uri = $self->_urlencode($object_key_name, "\/");
     
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
@@ -522,7 +533,7 @@ sub _get_signature {
     # HTTPMethod is one of the HTTP methods, for example GET, PUT, HEAD, and DELETE
     my $canonical_request = "$method\n";
     # CanonicalURI is the URI-encoded version of the absolute path component of the URI
-    $canonical_request .= "$canonical_uri\n";
+    $canonical_request .= "$object_key_name\n";
     # CanonicalQueryString specifies the URI-encoded query string parameters.
     $canonical_request .= "$canonical_query_string\n";
     # CanonicalHeaders is a list of request headers with their values.
@@ -531,16 +542,14 @@ sub _get_signature {
     # semicolon-separated list of lowercase request header names.
     $canonical_request .= "$signed_headers\n";
     $canonical_request .= $hashed_payload;
-    
-    #warn "Canonical Request:\n==========\n$canonical_request\n==========";
+    $self->_canonical_request($canonical_request);
 
     my $string_to_sign = "AWS4-HMAC-SHA256\n";
     $string_to_sign .= $self->_req_date->ymd("") . 'T' . $self->_req_date->hms("") . "Z\n";
     # Scope binds the resulting signature to a specific date, an AWS region, and a service.
     $string_to_sign .= $self->_req_date->ymd("") . '/' . $self->region . "/s3/aws4_request\n";
     $string_to_sign .= sha256_hex($canonical_request);    
-
-    #warn "String to Sign:\n==========\n$string_to_sign\n==========";
+    $self->_string_to_sign($string_to_sign);
 
     my $date_key = hmac_sha256($self->_req_date->ymd(""), 'AWS4' . $self->aws_secret_access_key);
     my $date_region_key = hmac_sha256($self->region, $date_key);
