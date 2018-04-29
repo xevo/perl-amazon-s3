@@ -503,7 +503,8 @@ sub _get_signature {
     my ($self, $method, $path, $headers, $expires, $hashed_payload) = @_;
 
     my $uri = URI->new(uri_unescape($path));
-    my ($bucket_name, $object_key_name) = uri_unescape($uri->path) =~ /^([^\/]*)(.+)$/;
+    
+    my ($bucket_name, $object_key_name) = uri_unescape($path) =~ /^([^\/]*)([^?]+)$/;
 
     my $canonical_uri = $self->_urlencode($object_key_name, '/');
     
@@ -515,7 +516,6 @@ sub _get_signature {
         $canonical_query_string .= '=';
         $canonical_query_string .= $self->_urlencode($parameters{$key});
     }
-
 
     my $canonical_headers = "";
     my $signed_headers;
