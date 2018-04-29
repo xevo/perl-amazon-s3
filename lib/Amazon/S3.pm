@@ -505,8 +505,10 @@ sub _get_signature {
     my $uri = URI->new(uri_unescape($path));
 
     my ($bucket_name, $object_key_name) = $path =~ /^([^\/]*)([^?]+)$/;
-    my $canonical_uri = $self->_urlencode(uri_unescape($object_key_name), '/');
- 
+    my $canonical_uri = uri_unescape($object_key_name);
+    utf8::decode($canonical_uri);
+    $canonical_uri = $self->_urlencode($object_key_name, '/');
+
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
     foreach my $key (sort keys %parameters) {
