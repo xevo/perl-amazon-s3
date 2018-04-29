@@ -349,7 +349,7 @@ sub _do_http {
     if ($response->code !~ /^(2|3|404)/)
     {
         warn "\n==========\nREQUEST:\n" . $request->as_string;
-        warn "\n==========\nRESPONSE:\n" . $response->as_string;
+        warn "\n==========\nRESPONSE:\n" . $response->status_line . "\n" . $response->content;
         warn "==========\n";
     }
 
@@ -503,8 +503,9 @@ sub _get_signature {
     my ($self, $method, $path, $headers, $expires, $hashed_payload) = @_;
 
     my $uri = URI->new(uri_unescape($path));
+    my ($bucket_name, $object_key_name) = uri_unescape($uri->path) =~ /^([^\/]*)(.+)$/;
 
-    my ($bucket_name, $object_key_name) = $uri->path =~ /^([^\/]*)(.+)$/;
+    my $canonical_uri = $self->_urlencode($object_key_name, '/');
     
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
@@ -533,7 +534,7 @@ sub _get_signature {
     # HTTPMethod is one of the HTTP methods, for example GET, PUT, HEAD, and DELETE
     my $canonical_request = "$method\n";
     # CanonicalURI is the URI-encoded version of the absolute path component of the URI
-    $canonical_request .= "$object_key_name\n";
+    $canonical_request .= "$canonical_uri\n";
     # CanonicalQueryString specifies the URI-encoded query string parameters.
     $canonical_request .= "$canonical_query_string\n";
     # CanonicalHeaders is a list of request headers with their values.
