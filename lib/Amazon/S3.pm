@@ -346,7 +346,7 @@ sub _do_http {
         warn $self->_string_to_sign || "";
         warn "\n==========\n";
     }
-    if ($response->code !~ /^(2|3)/)
+    if ($response->code !~ /^(2|3|404)/)
     {
         warn "\n==========\nREQUEST:\n" . $request->as_string;
         warn "\n==========\nRESPONSE:\n" . $response->as_string;
