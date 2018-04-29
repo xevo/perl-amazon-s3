@@ -503,11 +503,10 @@ sub _get_signature {
     my ($self, $method, $path, $headers, $expires, $hashed_payload) = @_;
 
     my $uri = URI->new(uri_unescape($path));
-    
-    my ($bucket_name, $object_key_name) = uri_unescape($path) =~ /^([^\/]*)([^?]+)$/;
 
-    my $canonical_uri = $self->_urlencode($object_key_name, '/');
-    
+    my ($bucket_name, $object_key_name) = $path =~ /^([^\/]*)([^?]+)$/;
+    my $canonical_uri = $self->_urlencode(uri_unescape($object_key_name), '/');
+ 
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
     foreach my $key (sort keys %parameters) {
