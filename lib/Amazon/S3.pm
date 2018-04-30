@@ -16,7 +16,7 @@ use base qw(Class::Accessor::Fast);
 __PACKAGE__->mk_accessors(
     qw(
         region aws_access_key_id aws_secret_access_key secure ua err errstr timeout retry host
-        _req_date _canonical_request _string_to_sign
+        _req_date _canonical_request _string_to_sign _path_debug
     )
 );
 our $VERSION = '0.45';
@@ -340,6 +340,7 @@ sub _do_http {
     my $response = $self->ua->request($request, $filename);
     if ($response->code eq '403')
     {
+        warn "==========\nPATH DEBUG:\n" . $self->_path_debug;
         warn "CANONICAL REQUEST:\n==========\n";
         warn $self->_canonical_request || "";
         warn "\n==========\nSTRING TO SIGN:\n==========\n";
@@ -502,12 +503,19 @@ sub _merge_meta {
 sub _get_signature {
     my ($self, $method, $path, $headers, $expires, $hashed_payload) = @_;
 
+    my $path_debug = "RAW PATH: $path\n";
+
     my $uri = URI->new(uri_unescape($path));
+    $path_debug .= "URI PATH: " . $uri->path . "\n";
 
     my ($bucket_name, $object_key_name) = $path =~ /^([^\/]*)([^?]+)$/;
     my $canonical_uri = uri_unescape($object_key_name);
     utf8::decode($canonical_uri);
-    $canonical_uri = $self->_urlencode($object_key_name, '/');
+    $path_debug .= "DECODED URI: $canonical_uri" . "\n";
+
+    $canonical_uri = $self->_urlencode($canonical_uri, '/');
+
+    $self->_path_debug($path_debug);
 
     my $canonical_query_string = "";
     my %parameters = $uri->query_form;
